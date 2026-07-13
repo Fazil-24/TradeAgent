@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: tradeagent-backend
+    runtime: python
+    rootDir: backend
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CEREBRAS_API_KEY
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: DATA_DIR
+        value: /var/data
+      - key: PYTHON_VERSION
+        value: 3.11.9
+    disk:
+      name: tradeagent-data
+      mountPath: /var/data
+      sizeGB: 1
