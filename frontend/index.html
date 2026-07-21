@@ -12,6 +12,12 @@
     <meta name="apple-mobile-web-app-title" content="TradeAgent" />
     <meta name="description" content="AI-powered quotes and invoices for electricians" />
     <title>TradeAgent AI</title>
+    <!-- Google Identity Services — loaded async so it never blocks render -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <!-- Performance: preconnect to backend API and Google auth -->
+    <link rel="preconnect" href="https://accounts.google.com" />
+    <link rel="preconnect" href="https://oauth2.googleapis.com" />
+    <link rel="dns-prefetch" href="https://generativelanguage.googleapis.com" />
   </head>
   <body>
     <div id="root"></div>

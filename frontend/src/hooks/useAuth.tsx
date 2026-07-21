@@ -30,6 +30,7 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   login: (payload: LoginPayload) => Promise<void>;
   register: (payload: RegisterPayload) => Promise<void>;
+  googleLogin: (idToken: string) => Promise<void>;
   logout: () => void;
   updateUser: (user: User) => void;
 }
@@ -90,6 +91,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const googleLogin = useCallback(async (idToken: string) => {
+    try {
+      const res = await client.post<AuthResponse>("/api/auth/google", { id_token: idToken });
+      persistAuth(res.data);
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  }, []);
+
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
@@ -108,10 +118,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAuthenticated: !!user,
       login,
       register,
+      googleLogin,
       logout,
       updateUser,
     }),
-    [user, isLoading, login, register, logout, updateUser]
+    [user, isLoading, login, register, googleLogin, logout, updateUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

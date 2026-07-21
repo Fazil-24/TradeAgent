@@ -10,38 +10,45 @@ export const API_BASE_URL =
 
 const client = axios.create({
   baseURL: API_BASE_URL,
-  // A safety net so a request never hangs forever (e.g. backend not
-  // running) — AI generation can legitimately take a while, so this is
-  // generous rather than tight.
+  // Default timeout for normal requests. AI endpoints override this
+  // per-request because photo analysis with Gemini can take 60-90s.
   timeout: 30000,
 });
 
-client.interceptors.request.use((config) => {
-  const token = localStorage.getItem("tradeagent_token");
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
+// Use this for AI endpoints (analyze, recommendations) which are slow.
+export const aiClient = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 120000, // 2 minutes — Gemini vision can take 60-90s on large photos
 });
 
-client.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem("tradeagent_token");
-      localStorage.removeItem("tradeagent_user");
-      if (!window.location.pathname.includes("/login")) {
-        window.location.href = "/login";
+function addInterceptors(instance: ReturnType<typeof axios.create>) {
+  instance.interceptors.request.use((config) => {
+    const token = localStorage.getItem("tradeagent_token");
+    if (token) config.headers.Authorization = `Bearer ${token}`;
+    return config;
+  });
+  instance.interceptors.response.use(
+    (response) => response,
+    (error) => {
+      if (error.response?.status === 401) {
+        localStorage.removeItem("tradeagent_token");
+        localStorage.removeItem("tradeagent_user");
+        if (!window.location.pathname.includes("/login")) {
+          window.location.href = "/login";
+        }
       }
+      return Promise.reject(error);
     }
-    return Promise.reject(error);
-  }
-);
+  );
+}
+
+addInterceptors(client);
+addInterceptors(aiClient);
 
 export function getErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
     if (error.code === "ECONNABORTED") {
-      return "The request timed out. Please try again.";
+      return "The AI is taking longer than expected. Please try again — it usually completes within 60 seconds.";
     }
     if (!error.response) {
       return `Cannot reach the server at ${API_BASE_URL}. Is the backend running?`;

@@ -7,12 +7,15 @@ from pathlib import Path
 from typing import List, Optional
 
 from dotenv import load_dotenv
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 # Load .env relative to this file, not the process's cwd — uvicorn may be
 # launched with a working directory that differs from backend/.
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -27,9 +30,13 @@ from auth import (
     get_current_user,
     hash_password,
     verify_file_access_token,
+    verify_google_id_token,
 )
 from database import DATA_DIR, Base, engine, get_db
+from services.audit import log_event
 from services.invoice import create_invoice_from_quote
+from services.products import catalog as product_catalog
+from services.suppliers import search_suppliers
 from services.pdf import generate_invoice_pdf, generate_quote_pdf
 from services.quote import calculate_totals, generate_quote_number, normalize_items
 from services.whatsapp import (
@@ -45,7 +52,12 @@ os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 ai_router = AIRouter()
 
+# Rate limiter — keyed on client IP
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+
 app = FastAPI(title="TradeAgent AI")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Custom production domain (e.g. a domain attached to the Vercel project),
 # set as an env var on the host since it's only known after deploying.
@@ -155,9 +167,12 @@ def network_info():
 
 # ── AUTH ROUTES ───────────────────────────────────────────────
 @app.post("/api/auth/register", response_model=schemas.Token)
-def register(payload: schemas.UserRegister, db: Session = Depends(get_db)):
+@limiter.limit("10/hour")
+def register(request: Request, payload: schemas.UserRegister, db: Session = Depends(get_db)):
     existing = db.query(models.User).filter(models.User.email == payload.email).first()
     if existing:
+        log_event(db, "auth.register.failed", detail=f"duplicate email: {payload.email}",
+                  ip_address=get_remote_address(request), success=False)
         raise HTTPException(status_code=400, detail="Email already registered")
 
     user = models.User(
@@ -174,18 +189,71 @@ def register(payload: schemas.UserRegister, db: Session = Depends(get_db)):
     user_dir = os.path.join(UPLOADS_DIR, str(user.id))
     os.makedirs(os.path.join(user_dir, "pdfs"), exist_ok=True)
 
+    log_event(db, "auth.register", user_id=user.id, ip_address=get_remote_address(request))
     token = create_access_token({"sub": str(user.id)})
     return schemas.Token(access_token=token, user=schemas.UserOut.model_validate(user))
 
 
 @app.post("/api/auth/login", response_model=schemas.Token)
-def login(payload: schemas.UserLogin, db: Session = Depends(get_db)):
+@limiter.limit("20/hour")
+def login(request: Request, payload: schemas.UserLogin, db: Session = Depends(get_db)):
     user = authenticate_user(db, payload.email, payload.password)
     if not user:
+        log_event(db, "auth.login.failed", detail=f"email: {payload.email}",
+                  ip_address=get_remote_address(request), success=False)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
         )
+    log_event(db, "auth.login.success", user_id=user.id, ip_address=get_remote_address(request))
+    token = create_access_token({"sub": str(user.id)})
+    return schemas.Token(access_token=token, user=schemas.UserOut.model_validate(user))
+
+
+@app.post("/api/auth/google", response_model=schemas.Token)
+@limiter.limit("20/hour")
+async def google_login(request: Request, payload: schemas.GoogleLoginRequest, db: Session = Depends(get_db)):
+    """
+    Exchange a Google ID token (from Google Identity Services on the frontend)
+    for a TradeAgent JWT. Creates a new account automatically on first login.
+
+    Frontend flow:
+      1. User clicks "Sign in with Google" (GIS one-tap or popup)
+      2. Google returns an id_token (credential)
+      3. Frontend POSTs { id_token } here
+      4. We verify with Google, upsert the user, return our own JWT
+    Target total time: < 2 seconds end-to-end.
+    """
+    google_data = await verify_google_id_token(payload.id_token)
+
+    email = google_data["email"]
+    full_name = google_data.get("name", email.split("@")[0])
+    # google_sub is the stable unique identifier — store it for future reference
+    google_sub = google_data["sub"]
+
+    user = db.query(models.User).filter(models.User.email == email).first()
+
+    if user is None:
+        # Auto-register: use a random unusable password hash so they can't
+        # sign in via email/password (must use Google)
+        import secrets
+        user = models.User(
+            email=email,
+            hashed_password=hash_password(secrets.token_hex(32)),
+            full_name=full_name,
+            business_name=f"{full_name}'s Business",
+            google_sub=google_sub,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        os.makedirs(os.path.join(UPLOADS_DIR, str(user.id), "pdfs"), exist_ok=True)
+    elif not user.google_sub:
+        user.google_sub = google_sub
+        db.commit()
+        db.refresh(user)
+
+    log_event(db, "auth.google.success", user_id=user.id, ip_address=get_remote_address(request))
     token = create_access_token({"sub": str(user.id)})
     return schemas.Token(access_token=token, user=schemas.UserOut.model_validate(user))
 
@@ -411,8 +479,33 @@ async def ai_analyze(
         )
 
     items = normalize_items(result.get("items", []))
+
+    # Parse detected components
+    raw_components = result.get("detected_components", []) or []
+    detected_components = [
+        schemas.DetectedComponent(**{
+            k: v for k, v in c.items()
+            if k in schemas.DetectedComponent.model_fields and v is not None
+        })
+        for c in raw_components
+        if isinstance(c, dict)
+    ]
+
+    # Parse room measurements
+    raw_measurements = result.get("room_measurements")
+    room_measurements = (
+        schemas.RoomMeasurements(**{
+            k: v for k, v in raw_measurements.items()
+            if k in schemas.RoomMeasurements.model_fields and v is not None
+        })
+        if isinstance(raw_measurements, dict) else None
+    )
+
     response = schemas.AIAnalyzeResponse(
         items=items,
+        detected_components=detected_components,
+        room_measurements=room_measurements,
+        measurement_questions=result.get("measurement_questions", []),
         observations=result.get("observations", []),
         labor_hours=result.get("labor_hours", 0),
         complexity=result.get("complexity", "medium"),
@@ -460,6 +553,89 @@ def ai_whatsapp_message(
         return {"message": message, "whatsapp_link": link}
 
     raise HTTPException(status_code=400, detail="quote_id or invoice_id is required")
+
+
+@app.post("/api/ai/recommendations", response_model=schemas.RecommendationResponse)
+def ai_recommendations(
+    payload: schemas.RecommendationRequest,
+    current_user: models.User = Depends(get_current_user),
+):
+    """
+    Given a detected component type and customer preferences,
+    return ranked product recommendations with running cost analysis.
+    """
+    prefs = payload.preferences
+    products_raw = product_catalog.get_recommendations(
+        category=payload.component_type,
+        budget=prefs.budget,
+        brand=prefs.brand,
+        feature_tags=prefs.features,
+        sweep_mm=payload.sweep_mm,
+    )
+
+    ELECTRICITY_RATE = 8.0   # INR per kWh
+    DAILY_HOURS = 8
+    STANDARD_WATTAGE = 75    # benchmark for savings calculation
+
+    enriched = []
+    for p in products_raw:
+        w = p.get("wattage", 0) or 0
+        kwh_per_day = w * DAILY_HOURS / 1000
+        monthly_cost = round(kwh_per_day * 30 * ELECTRICITY_RATE, 1)
+        annual_cost = round(kwh_per_day * 365 * ELECTRICITY_RATE, 1)
+        five_year_cost = round(annual_cost * 5 + p["price"], 1)
+
+        std_kwh_day = STANDARD_WATTAGE * DAILY_HOURS / 1000
+        annual_savings = round((std_kwh_day - kwh_per_day) * 365 * ELECTRICITY_RATE, 1)
+
+        # Simple why_recommended based on tags
+        tag_reasons = {
+            "bldc": "Uses a BLDC motor which consumes up to 65% less electricity than regular fans.",
+            "energy_saving": "Rated 5-star by BEE — saves significantly on electricity bills.",
+            "premium": "Built with premium components for longer life and better performance.",
+            "value": "Excellent balance of quality and price — most popular in this segment.",
+            "economy": "Most affordable option, suitable for budget-conscious buyers.",
+            "trending": "Currently trending — well-reviewed by recent buyers.",
+        }
+        reason_parts = [tag_reasons[t] for t in p.get("tags", []) if t in tag_reasons]
+        why = reason_parts[0] if reason_parts else "Recommended based on your preferences."
+
+        enriched.append(schemas.ProductRecommendation(
+            **{k: v for k, v in p.items() if k in schemas.ProductRecommendation.model_fields},
+            monthly_electricity_cost=monthly_cost,
+            annual_electricity_cost=annual_cost,
+            five_year_running_cost=five_year_cost,
+            annual_savings_vs_standard=max(0, annual_savings),
+            why_recommended=why,
+        ))
+
+    # Sweep recommendation for fans
+    sweep_mm = payload.sweep_mm
+    sweep_reason = None
+    if payload.component_type == "ceiling_fan" and payload.room_area_sqm:
+        sqft = payload.room_area_sqm * 10.764
+        if sqft < 100:
+            sweep_mm = sweep_mm or 900
+            sweep_reason = f"Room is ~{sqft:.0f} sqft. A 900mm fan is ideal for rooms under 100 sqft."
+        elif sqft < 150:
+            sweep_mm = sweep_mm or 1050
+            sweep_reason = f"Room is ~{sqft:.0f} sqft. A 1050mm fan suits rooms between 100–150 sqft."
+        elif sqft < 200:
+            sweep_mm = sweep_mm or 1200
+            sweep_reason = f"Room is ~{sqft:.0f} sqft. A 1200mm fan is ideal for 150–200 sqft rooms."
+        else:
+            sweep_mm = sweep_mm or 1400
+            sweep_reason = f"Room is ~{sqft:.0f} sqft. Consider a 1400mm fan or two 1200mm fans."
+
+    room_sqft = round(payload.room_area_sqm * 10.764, 1) if payload.room_area_sqm else None
+
+    return schemas.RecommendationResponse(
+        component_type=payload.component_type,
+        sweep_recommendation_mm=sweep_mm,
+        sweep_reason=sweep_reason,
+        room_area_sqft=room_sqft,
+        products=enriched,
+    )
 
 
 # ── QUOTE ROUTES ──────────────────────────────────────────────
@@ -700,6 +876,37 @@ def invoice_get_pdf(invoice_id: int, token: str, db: Session = Depends(get_db)):
         media_type="application/pdf",
         filename=f"{invoice.invoice_number}.pdf",
     )
+
+
+# ── SUPPLIER SEARCH ───────────────────────────────────────────
+@app.post("/api/suppliers/search", response_model=List[schemas.SupplierResult])
+def supplier_search(
+    payload: schemas.SupplierSearchRequest,
+    current_user: models.User = Depends(get_current_user),
+):
+    """
+    Find electrical shops (from ShopConnect) that stock the items in a quote.
+    Returns shops ranked by match completeness then distance.
+    Requires SUPABASE_URL and SUPABASE_SERVICE_KEY in backend/.env
+    """
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+    if not supabase_url or not supabase_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Supplier search is not configured. Add SUPABASE_URL and SUPABASE_SERVICE_KEY to backend/.env",
+        )
+    try:
+        results = search_suppliers(
+            items=payload.items,
+            lat=payload.lat,
+            lng=payload.lng,
+            radius_km=payload.radius_km or 15,
+            city=payload.city,   # None = search all cities
+        )
+        return results
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Supplier search failed: {exc}") from exc
 
 
 # ── DASHBOARD ─────────────────────────────────────────────────

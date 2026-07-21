@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 
+import httpx
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
@@ -73,6 +74,40 @@ def verify_file_access_token(token: str, resource: str, resource_id: int) -> int
     ):
         raise HTTPException(status_code=401, detail="Invalid or expired download link")
     return int(payload["sub"])
+
+
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_TOKEN_INFO_URL = "https://oauth2.googleapis.com/tokeninfo"
+
+
+async def verify_google_id_token(id_token: str) -> dict:
+    """
+    Verify a Google ID token using Google's public tokeninfo endpoint.
+    Returns the token payload (sub, email, name, picture) on success.
+    Raises HTTPException on failure.
+
+    Fast path: single HTTP call to Google — completes in ~200-400 ms.
+    No Firebase SDK required; only a GOOGLE_CLIENT_ID env var is needed.
+    """
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(GOOGLE_TOKEN_INFO_URL, params={"id_token": id_token})
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    payload = resp.json()
+
+    if payload.get("error"):
+        raise HTTPException(status_code=401, detail="Google token rejected")
+
+    # Verify the token was issued for our app
+    if GOOGLE_CLIENT_ID and payload.get("aud") != GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=401, detail="Google token audience mismatch")
+
+    if not payload.get("email_verified") or not payload.get("email"):
+        raise HTTPException(status_code=401, detail="Google email not verified")
+
+    return payload
 
 
 def get_current_user(

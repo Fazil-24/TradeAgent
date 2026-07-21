@@ -1,5 +1,8 @@
+import React from "react";
 import CheckCircleOutlineRoundedIcon from "@mui/icons-material/CheckCircleOutlineRounded";
 import DownloadRoundedIcon from "@mui/icons-material/DownloadRounded";
+import KeyboardArrowDownRoundedIcon from "@mui/icons-material/KeyboardArrowDownRounded";
+import KeyboardArrowUpRoundedIcon from "@mui/icons-material/KeyboardArrowUpRounded";
 import RequestQuoteRoundedIcon from "@mui/icons-material/RequestQuoteRounded";
 import WhatsAppIcon from "@mui/icons-material/WhatsApp";
 import {
@@ -7,6 +10,7 @@ import {
   Box,
   Chip,
   CircularProgress,
+  Collapse,
   IconButton,
   Paper,
   Skeleton,
@@ -21,6 +25,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import SupplierPanel from "../components/SupplierPanel";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -58,6 +63,7 @@ export default function QuotesPage() {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [expandedQuoteId, setExpandedQuoteId] = useState<number | null>(null);
 
   const handleApprove = async (quote: Quote) => {
     setBusyId(quote.id);
@@ -129,6 +135,7 @@ export default function QuotesPage() {
           <Table>
             <TableHead>
               <TableRow>
+                <TableCell />
                 <TableCell>{t("quotes.quoteNumber")}</TableCell>
                 <TableCell>{t("quotes.customer")}</TableCell>
                 <TableCell>{t("common.total")}</TableCell>
@@ -141,69 +148,95 @@ export default function QuotesPage() {
               {quotes.map((quote) => {
                 const customer = customerMap.get(quote.customer_id);
                 const isBusy = busyId === quote.id;
+                const isExpanded = expandedQuoteId === quote.id;
                 return (
-                  <TableRow key={quote.id} hover>
-                    <TableCell>{quote.quote_number}</TableCell>
-                    <TableCell>{customer?.name ?? "—"}</TableCell>
-                    <TableCell>
-                      {symbol}
-                      {quote.total.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        size="small"
-                        label={t(
-                          `quotes.status${quote.status.charAt(0).toUpperCase()}${quote.status.slice(1)}`
-                        )}
-                        color={STATUS_COLORS[quote.status] ?? "default"}
-                      />
-                    </TableCell>
-                    <TableCell>{new Date(quote.created_at).toLocaleDateString()}</TableCell>
-                    <TableCell align="right">
-                      <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                        {quote.status !== "approved" && (
-                          <Tooltip title={t("quotes.approve")}>
+                  <React.Fragment key={quote.id}>
+                    <TableRow hover>
+                      <TableCell padding="checkbox">
+                        <Tooltip title={isExpanded ? "Hide supplier search" : "Find suppliers for this quote"}>
+                          <IconButton
+                            size="small"
+                            onClick={() => setExpandedQuoteId(isExpanded ? null : quote.id)}
+                          >
+                            {isExpanded ? (
+                              <KeyboardArrowUpRoundedIcon fontSize="small" />
+                            ) : (
+                              <KeyboardArrowDownRoundedIcon fontSize="small" />
+                            )}
+                          </IconButton>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell>{quote.quote_number}</TableCell>
+                      <TableCell>{customer?.name ?? "—"}</TableCell>
+                      <TableCell>
+                        {symbol}
+                        {quote.total.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      </TableCell>
+                      <TableCell>
+                        <Chip
+                          size="small"
+                          label={t(
+                            `quotes.status${quote.status.charAt(0).toUpperCase()}${quote.status.slice(1)}`
+                          )}
+                          color={STATUS_COLORS[quote.status] ?? "default"}
+                        />
+                      </TableCell>
+                      <TableCell>{new Date(quote.created_at).toLocaleDateString()}</TableCell>
+                      <TableCell align="right">
+                        <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                          {quote.status !== "approved" && (
+                            <Tooltip title={t("quotes.approve")}>
+                              <span>
+                                <IconButton
+                                  size="small"
+                                  disabled={isBusy}
+                                  onClick={() => handleApprove(quote)}
+                                >
+                                  <CheckCircleOutlineRoundedIcon fontSize="small" />
+                                </IconButton>
+                              </span>
+                            </Tooltip>
+                          )}
+                          <Tooltip title={t("createQuote.downloadPdf")}>
                             <span>
                               <IconButton
                                 size="small"
                                 disabled={isBusy}
-                                onClick={() => handleApprove(quote)}
+                                onClick={() => handleDownload(quote)}
                               >
-                                <CheckCircleOutlineRoundedIcon fontSize="small" />
+                                {isBusy ? (
+                                  <CircularProgress size={16} />
+                                ) : (
+                                  <DownloadRoundedIcon fontSize="small" />
+                                )}
                               </IconButton>
                             </span>
                           </Tooltip>
-                        )}
-                        <Tooltip title={t("createQuote.downloadPdf")}>
-                          <span>
-                            <IconButton
-                              size="small"
-                              disabled={isBusy}
-                              onClick={() => handleDownload(quote)}
-                            >
-                              {isBusy ? (
-                                <CircularProgress size={16} />
-                              ) : (
-                                <DownloadRoundedIcon fontSize="small" />
-                              )}
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                        <Tooltip title={t("createQuote.shareWhatsApp")}>
-                          <span>
-                            <IconButton
-                              size="small"
-                              disabled={isBusy}
-                              onClick={() => handleWhatsApp(quote)}
-                              sx={{ color: "#25D366" }}
-                            >
-                              <WhatsAppIcon fontSize="small" />
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                      </Stack>
-                    </TableCell>
-                  </TableRow>
+                          <Tooltip title={t("createQuote.shareWhatsApp")}>
+                            <span>
+                              <IconButton
+                                size="small"
+                                disabled={isBusy}
+                                onClick={() => handleWhatsApp(quote)}
+                                sx={{ color: "#25D366" }}
+                              >
+                                <WhatsAppIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        </Stack>
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell colSpan={7} sx={{ py: 0, border: isExpanded ? undefined : "none" }}>
+                        <Collapse in={isExpanded} unmountOnExit>
+                          <Box px={2} pb={2}>
+                            <SupplierPanel quote={quote} />
+                          </Box>
+                        </Collapse>
+                      </TableCell>
+                    </TableRow>
+                  </React.Fragment>
                 );
               })}
             </TableBody>

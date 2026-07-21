@@ -46,6 +46,10 @@ class Token(BaseModel):
     user: UserOut
 
 
+class GoogleLoginRequest(BaseModel):
+    id_token: str
+
+
 # ── CUSTOMER ──────────────────────────────────────────────────
 class CustomerCreate(BaseModel):
     name: str
@@ -123,20 +127,95 @@ class AIAnalyzeRequest(BaseModel):
 
 class AIAnalyzeItem(BaseModel):
     description: str
+    category: Optional[str] = "material"   # material|labour|transport|accessory
     quantity: float
     unit: str
     unit_price: float
     total: float
+    brand_suggestion: Optional[str] = None
+
+
+class DetectedComponent(BaseModel):
+    type: str
+    label: str
+    count: int = 1
+    condition: str = "new_required"         # new_required|existing_good|existing_needs_replacement
+    notes: Optional[str] = None
+    sweep_recommendation_mm: Optional[int] = None
+    sweep_reason: Optional[str] = None
+
+
+class RoomMeasurements(BaseModel):
+    estimated_width_m: Optional[float] = None
+    estimated_length_m: Optional[float] = None
+    estimated_ceiling_height_m: Optional[float] = None
+    floor_area_sqm: Optional[float] = None
+    wall_area_sqm: Optional[float] = None
+    cable_length_estimate_m: Optional[float] = None
+    conduit_length_estimate_m: Optional[float] = None
+    reference_used: Optional[str] = None
+    confidence_pct: Optional[int] = None
+    confidence_note: Optional[str] = None
 
 
 class AIAnalyzeResponse(BaseModel):
     items: List[AIAnalyzeItem]
+    detected_components: Optional[List[DetectedComponent]] = []
+    room_measurements: Optional[RoomMeasurements] = None
+    measurement_questions: Optional[List[str]] = []
     observations: Optional[List[str]] = []
     labor_hours: Optional[float] = 0
     complexity: Optional[str] = "medium"
     safety_notes: Optional[List[str]] = []
     notes: Optional[str] = None
     disclaimer: str = "These are AI estimates. Please review before sending."
+
+
+class CustomerPreferences(BaseModel):
+    budget: str = "value"                   # economy|budget|value|premium|luxury
+    brand: Optional[str] = None
+    features: Optional[List[str]] = []     # energy_saving|wifi|bldc|remote|silent|designer
+    purchase_preference: Optional[str] = "best_value"
+
+
+class RecommendationRequest(BaseModel):
+    component_type: str                     # ceiling_fan|switch|socket|light|...
+    sweep_mm: Optional[int] = None
+    room_area_sqm: Optional[float] = None
+    preferences: CustomerPreferences
+    currency: Optional[str] = "INR"
+
+
+class ProductRecommendation(BaseModel):
+    id: str
+    name: str
+    brand: str
+    category: str
+    price: float
+    currency: str
+    wattage: int
+    warranty_years: int
+    star_rating: float
+    image_url: str
+    features: List[str]
+    pros: List[str]
+    cons: List[str]
+    tags: List[str]
+    sweep_mm: Optional[int] = None
+    lumens: Optional[int] = None
+    monthly_electricity_cost: Optional[float] = None
+    annual_electricity_cost: Optional[float] = None
+    five_year_running_cost: Optional[float] = None
+    annual_savings_vs_standard: Optional[float] = None
+    why_recommended: Optional[str] = None
+
+
+class RecommendationResponse(BaseModel):
+    component_type: str
+    sweep_recommendation_mm: Optional[int] = None
+    sweep_reason: Optional[str] = None
+    room_area_sqft: Optional[float] = None
+    products: List[ProductRecommendation]
 
 
 class WhatsAppMessageRequest(BaseModel):
@@ -222,6 +301,49 @@ class InvoiceOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ── SUPPLIERS ─────────────────────────────────────────────────
+class SupplierSearchRequest(BaseModel):
+    items: List[Any]          # list of quote items [{description, quantity, ...}]
+    lat: Optional[float] = None   # omit to search all shops regardless of distance
+    lng: Optional[float] = None
+    radius_km: Optional[float] = 15
+    city: Optional[str] = None    # omit to search all cities
+
+
+class SupplierMatchedItem(BaseModel):
+    quote_item: str
+    shop_product: str
+    brand: Optional[str] = None
+    quantity_available: int
+    unit_price: float
+    unit: str
+    match_confidence: int
+
+
+class SupplierShop(BaseModel):
+    id: str
+    shop_name: str
+    owner_name: str
+    phone: str
+    whatsapp: Optional[str] = None
+    address: str
+    delivery_available: bool
+    delivery_radius_km: Optional[int] = None
+    min_order_amount: Optional[float] = None
+
+
+class SupplierResult(BaseModel):
+    shop: SupplierShop
+    tier: str                  # "complete" | "partial"
+    match_pct: int
+    matched_count: int
+    total_count: int
+    distance_km: Optional[float] = None   # None when location not provided
+    matched_items: List[SupplierMatchedItem]
+    missing_items: List[str]
+    price_disclaimer: str
 
 
 # ── DASHBOARD ─────────────────────────────────────────────────

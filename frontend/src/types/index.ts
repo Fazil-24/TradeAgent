@@ -41,15 +41,45 @@ export interface Job {
 
 export interface QuoteItem {
   description: string;
+  category?: "material" | "labour" | "transport" | "accessory";
   quantity: number;
   unit: string;
   unit_price: number;
   total: number;
   ai_generated?: boolean;
+  brand_suggestion?: string | null;
+}
+
+// ── AI Analysis ───────────────────────────────────────────────
+
+export interface DetectedComponent {
+  type: string;
+  label: string;
+  count: number;
+  condition: "new_required" | "existing_good" | "existing_needs_replacement";
+  notes: string | null;
+  sweep_recommendation_mm: number | null;
+  sweep_reason: string | null;
+}
+
+export interface RoomMeasurements {
+  estimated_width_m: number | null;
+  estimated_length_m: number | null;
+  estimated_ceiling_height_m: number | null;
+  floor_area_sqm: number | null;
+  wall_area_sqm: number | null;
+  cable_length_estimate_m: number | null;
+  conduit_length_estimate_m: number | null;
+  reference_used: string | null;
+  confidence_pct: number | null;
+  confidence_note: string | null;
 }
 
 export interface AIAnalyzeResult {
   items: QuoteItem[];
+  detected_components?: DetectedComponent[];
+  room_measurements?: RoomMeasurements | null;
+  measurement_questions?: string[];
   observations?: string[];
   labor_hours?: number;
   complexity?: string;
@@ -57,6 +87,60 @@ export interface AIAnalyzeResult {
   notes?: string | null;
   disclaimer: string;
 }
+
+// ── Customer Preferences ──────────────────────────────────────
+
+export type BudgetTier = "economy" | "budget" | "value" | "premium" | "luxury";
+export type PurchasePreference =
+  | "lowest_price"
+  | "best_value"
+  | "premium"
+  | "highest_rated"
+  | "fast_delivery"
+  | "nearby_shop";
+
+export interface CustomerPreferences {
+  budget: BudgetTier;
+  brand: string | null;
+  features: string[];
+  purchase_preference: PurchasePreference;
+}
+
+// ── Product Recommendations ───────────────────────────────────
+
+export interface ProductRecommendation {
+  id: string;
+  name: string;
+  brand: string;
+  category: string;
+  price: number;
+  currency: string;
+  wattage: number;
+  warranty_years: number;
+  star_rating: number;
+  image_url: string;
+  features: string[];
+  pros: string[];
+  cons: string[];
+  tags: string[];
+  sweep_mm: number | null;
+  lumens: number | null;
+  monthly_electricity_cost: number | null;
+  annual_electricity_cost: number | null;
+  five_year_running_cost: number | null;
+  annual_savings_vs_standard: number | null;
+  why_recommended: string | null;
+}
+
+export interface RecommendationResponse {
+  component_type: string;
+  sweep_recommendation_mm: number | null;
+  sweep_reason: string | null;
+  room_area_sqft: number | null;
+  products: ProductRecommendation[];
+}
+
+// ── Quotes & Invoices ─────────────────────────────────────────
 
 export interface Quote {
   id: number;

@@ -6,6 +6,7 @@ import {
   Box,
   Button,
   CircularProgress,
+  Divider,
   IconButton,
   InputAdornment,
   Paper,
@@ -15,12 +16,29 @@ import {
   useTheme,
 } from "@mui/material";
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 
 import { useAuth } from "../hooks/useAuth";
+
+// Google Identity Services global type
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (cfg: object) => void;
+          renderButton: (el: HTMLElement, cfg: object) => void;
+          prompt: () => void;
+        };
+      };
+    };
+  }
+}
+
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
 interface LoginFormValues {
   email: string;
@@ -37,13 +55,62 @@ export default function LoginPage() {
   const { t } = useTranslation();
   const theme = useTheme();
   const navigate = useNavigate();
-  const { login, register: registerUser, isAuthenticated } = useAuth();
+  const { login, register: registerUser, googleLogin, isAuthenticated } = useAuth();
 
   const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+  const googleBtnRef = useRef<HTMLDivElement>(null);
+
+  // Initialise Google Identity Services once the script loads
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID) return;
+
+    const init = () => {
+      if (!window.google?.accounts?.id) return;
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: async (response: { credential: string }) => {
+          setIsGoogleLoading(true);
+          setSubmitError(null);
+          try {
+            await googleLogin(response.credential);
+            setSubmitSuccess("Signed in with Google!");
+            setTimeout(() => navigate("/", { replace: true }), 700);
+          } catch (err) {
+            setSubmitError(err instanceof Error ? err.message : "Google sign-in failed");
+          } finally {
+            setIsGoogleLoading(false);
+          }
+        },
+      });
+      if (googleBtnRef.current) {
+        window.google.accounts.id.renderButton(googleBtnRef.current, {
+          theme: "outline",
+          size: "large",
+          width: googleBtnRef.current.offsetWidth || 340,
+          text: "signin_with",
+          shape: "rectangular",
+        });
+      }
+    };
+
+    // Script may already be loaded or arrive shortly after mount
+    if (window.google?.accounts?.id) {
+      init();
+    } else {
+      const interval = setInterval(() => {
+        if (window.google?.accounts?.id) {
+          clearInterval(interval);
+          init();
+        }
+      }, 200);
+      return () => clearInterval(interval);
+    }
+  }, [googleLogin, navigate]);
 
   useEffect(() => {
     // Skip the automatic redirect while we're showing a success message —
@@ -259,6 +326,28 @@ export default function LoginPage() {
                   t("auth.signIn")
                 )}
               </Button>
+
+              {/* Google Sign-In */}
+              {GOOGLE_CLIENT_ID && (
+                <>
+                  <Divider sx={{ my: 0.5 }}>
+                    <Typography variant="caption" color="text.secondary">
+                      OR
+                    </Typography>
+                  </Divider>
+
+                  {isGoogleLoading ? (
+                    <Box sx={{ display: "flex", justifyContent: "center", py: 1 }}>
+                      <CircularProgress size={24} />
+                    </Box>
+                  ) : (
+                    <Box
+                      ref={googleBtnRef}
+                      sx={{ width: "100%", minHeight: 44, "& > div": { width: "100% !important" } }}
+                    />
+                  )}
+                </>
+              )}
 
               <Typography variant="body2" textAlign="center" color="text.secondary">
                 {isRegisterMode ? t("auth.haveAccount") : t("auth.noAccount")}{" "}

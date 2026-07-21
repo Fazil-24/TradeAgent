@@ -15,6 +15,18 @@ from sqlalchemy import (
 from database import Base
 
 
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    detail = Column(Text, nullable=True)
+    ip_address = Column(String, nullable=True)
+    success = Column(Boolean, default=True)
+    created_at = Column(DateTime, nullable=False)
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -26,6 +38,7 @@ class User(Base):
     phone = Column(String, nullable=True)
     currency = Column(String, default="INR")
     language = Column(String, default="en")
+    google_sub = Column(String, nullable=True, index=True)   # Google OAuth subject ID
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
