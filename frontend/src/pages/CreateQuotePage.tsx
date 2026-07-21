@@ -193,7 +193,6 @@ export default function CreateQuotePage() {
   };
 
   const detectedComponents: DetectedComponent[] = aiResult?.detected_components ?? [];
-  const fanComponents = detectedComponents.filter((c) => c.type === "ceiling_fan");
   const componentsNeedingRecs = detectedComponents.filter((c) =>
     ["ceiling_fan", "switch", "socket", "light"].includes(c.type)
   );

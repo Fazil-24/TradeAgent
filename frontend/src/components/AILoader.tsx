@@ -68,7 +68,6 @@ export default function AILoader({
     return () => clearTimeout(t);
   }, [completed, onComplete, steps.length]);
 
-  const currentStep = steps[stepIndex];
   const isDone = completed && stepIndex === steps.length - 1;
 
   return (
